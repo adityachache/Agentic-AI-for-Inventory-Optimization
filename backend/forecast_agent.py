@@ -151,20 +151,19 @@ class ForecastAgent:
     # --------------------------------------------------
     # Public API: forecast multiple products
     # --------------------------------------------------
-    def forecast(self, item_ids, store_id, start_date, end_date):
+    def forecast(self, item_id, store_id, start_date, end_date):
         start_date = pd.to_datetime(start_date)
         end_date = pd.to_datetime(end_date)
 
         results = []
-        for item_id in item_ids:
-            results.append(
-                self._forecast_single(
-                    item_id=item_id,
-                    store_id=store_id,
-                    start_date=start_date,
-                    end_date=end_date
-                )
+        results.append(
+            self._forecast_single(
+                item_id=item_id,
+                store_id=store_id,
+                start_date=start_date,
+                end_date=end_date
             )
+        )
 
         return {
             "start_date": str(start_date.date()),

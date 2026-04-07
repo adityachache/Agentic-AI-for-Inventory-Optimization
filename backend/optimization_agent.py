@@ -11,9 +11,9 @@ class OptimizationAgent:
     def __init__(
         self,
         simulation_agent,
-        holding_cost_rate=0.25,        # annual holding cost as % of price
-        order_cost=20.0,               # fixed cost per order
-        stockout_cost_multiplier=3.0,  # lost sales penalty
+        holding_cost_rate=0.5,        # annual holding cost as % of price
+        order_cost=150.0,               # fixed cost per order
+        stockout_cost_multiplier=1.5,  # lost sales penalty
         target_fill_rate=0.95
     ):
         self.sim_agent = simulation_agent
@@ -81,13 +81,16 @@ class OptimizationAgent:
                     item_id=item_id,
                     store_id=store_id,
                     s=s,
-                    Q=Q
+                    Q=Q,
+                    return_sample_path=False,
+                    return_full_distribution=False
                 )
 
                 fill_rate = sim_result["results"]["expected_fill_rate"]
 
-                # enforce service constraint
-                if fill_rate < self.target_fill_rate:
+                # enforce service constraint (allow slight buffer below target)
+                min_fill_rate = max(0.0, self.target_fill_rate - 0.02)
+                if fill_rate < min_fill_rate:
                     continue
 
                 cost = self._compute_cost(

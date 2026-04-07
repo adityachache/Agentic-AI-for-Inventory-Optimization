@@ -1,212 +1,306 @@
-import os
+from typing import Any
+
+
 import streamlit as st
-import pandas as pd
 from google import genai
-from backend.agent_pipeline import run_inventory_planner
+
 from backend.build_base_df import build_df_base
 from backend.forecast_agent import ForecastAgent
+from backend.dashboard_controller import run_single_sku_dashboard, run_simulation_preview
+from backend.ui_renders import (
+    render_forecast,
+    render_policy_tables,
+    render_scenarios,
+    render_optimal_scenarios,
+    render_simulation_storyboard
+)
+from backend.simulation_agent import SimulationAgent
+from backend.optimization_agent import OptimizationAgent
+import plotly.graph_objects as go
+import plotly.express as px
+from backend.app_context import get_app_context
+import pandas as pd
+from datetime import datetime
 
-# Use env var so the key is never committed (set GOOGLE_GENAI_API_KEY locally or in .env)
-llm_client = genai.Client(api_key=os.environ.get("GOOGLE_GENAI_API_KEY", ""))
+
+HOLDOUT_START = datetime(2015, 4, 24)
+HOLDOUT_END = datetime(2016, 4, 24)
+
+
+st.set_page_config(
+    page_title="Inventory Optimization",
+    layout="wide"
+)
+
+st.title("Inventory Optimization")
+
+# -------------------------
+# LLM Client
+# -------------------------
+
+llm_client = genai.Client(api_key="YOUR_API_KEY")
+
+# -------------------------
+# Cached Data + Models
+# -------------------------
 
 @st.cache_data
-def load_df_base():
+def load_df():
     return build_df_base(
-        store_ids=("CA_1", "TX_1", "WI_1"),
-        max_ids=3000
+        store_ids=("CA_1", "TX_1", "WI_1")
     )
 
-df_base = load_df_base()
+df_base = load_df()
 
-agent = ForecastAgent(
-    model_dir="models",
-    df_base=df_base
-)
-
-print(df_base.shape)
-
-st.header("Inventory Optimization")
-
-st.markdown(
-    """
-    Select products and planning preferences below to generate
-    demand forecasts and optimized inventory replenishment policies.
-    """
-)
-
-if "planner_results" not in st.session_state:
-    st.session_state.planner_results = None
-
-if "last_run_inputs" not in st.session_state:
-    st.session_state.last_run_inputs = None
-
-
-# -------------------------
-# INPUT SECTION
-# -------------------------
-st.subheader("Planning Inputs")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    store_id = st.selectbox(
-        "Store",
-        options=sorted(df_base["store_id"].unique()),
-        index=0
+@st.cache_resource
+def load_forecast_model(df):
+    return ForecastAgent(
+        model_dir="models",
+        df_base=df
     )
 
-    item_ids = st.multiselect(
-        "Products (max 5)",
-        options=sorted(df_base["item_id"].unique()),
-        max_selections=5,
-        help="Select up to 5 products for focused planning."
-    )
+@st.cache_data
+def load_trained_skus():
+    sku_df = pd.read_csv("selected_products.csv")
+    return sorted(sku_df["item_id"].unique())
 
-with col2:
-    start_date = st.date_input(
-        "Start date",
-        value=df_base["date"].min()
-    )
-    end_date = st.date_input(
-        "End date",
-        value=df_base["date"].max()
-    )
+trained_skus = load_trained_skus()
 
-service_level_target = st.slider(
-    "Target Service Level (%)",
-    min_value=90,
-    max_value=99,
-    value=95,
-    step=1
-) / 100.0
+@st.cache_resource
+def load_sim_agent():
+    return SimulationAgent()
 
-mode = st.radio(
-    "Policy Mode",
-    options=["Auto Optimize", "Manual What-If"],
-    horizontal=True
-)
+@st.cache_resource
+def load_opt_agent(_sim_agent):
+    return OptimizationAgent(simulation_agent=sim_agent)
 
-manual_policy = None
-if mode == "Manual What-If":
-    c1, c2 = st.columns(2)
-    with c1:
-        s_val = st.number_input("Reorder Point (s)", min_value=0, value=100)
-    with c2:
-        q_val = st.number_input("Order Quantity (Q)", min_value=1, value=200)
-
-    manual_policy = {"s": int(s_val), "Q": int(q_val)}
+forecast_agent = load_forecast_model(df_base)
+sim_agent = load_sim_agent()
+opt_agent = load_opt_agent(sim_agent)
 
 # -------------------------
-# ADVANCED ASSUMPTIONS
+# Session Flags
 # -------------------------
-with st.expander("Advanced Planning Assumptions"):
-    lead_time_days = st.number_input("Lead Time (days)", value=2)
-    order_cost = st.number_input("Order Cost ($ per order)", value=20.0)
-    holding_cost_rate = st.number_input("Holding Cost Rate (annual %)", value=25.0) / 100
-    stockout_cost_multiplier = st.number_input("Stockout Cost Multiplier", value=3.0)
-    demand_cv = st.number_input("Demand Variability (CV)", value=0.25)
 
-assumptions = {
-    "lead_time_days": lead_time_days,
-    "order_cost": order_cost,
-    "holding_cost_rate": holding_cost_rate,
-    "stockout_cost_multiplier": stockout_cost_multiplier,
-    "demand_cv": demand_cv
-}
+context = get_app_context()
 
-# -------------------------
-# RUN BUTTON
-# -------------------------
-run_clicked = st.button("Run Inventory Optimization", type="primary")
+def get_common_inputs():
+    col1, col2 = st.columns(2)
 
-# -------------------------
-# RESULTS SECTION
-# -------------------------
-# --- COMPUTE ONLY WHEN BUTTON CLICKED ---
-if run_clicked:
-    if not item_ids:
-        st.error("Please select at least one product.")
-    else:
-        with st.spinner("Running demand forecasting, simulation, and optimization..."):
-            results = run_inventory_planner(
-                store_id=store_id,
-                item_ids=item_ids,
-                start_date=start_date,
-                end_date=end_date,
-                service_level_target=service_level_target,
-                mode="auto" if mode == "Auto Optimize" else "manual",
-                manual_policy=manual_policy,
-                assumptions=assumptions,
-                df_base=df_base,
-                forecast_agent=agent,
-                llm_client=llm_client
-            )
-
-        st.session_state.planner_results = results
-        st.session_state.last_run_inputs = {
-            "store_id": store_id,
-            "item_ids": item_ids,
-            "start_date": start_date,
-            "end_date": end_date,
-            "service_level_target": service_level_target,
-            "mode": mode
-        }
-
-# --- DISPLAY RESULTS IF THEY EXIST ---
-if st.session_state.planner_results is not None:
-    results = st.session_state.planner_results
-    st.success("Analysis complete")
-
-    # (all your forecast/policy/cost/LLM rendering here)    
-    # render forecast, policy, cost, summaries
-
-    # -------------------------
-    # DEMAND FORECASTS
-    # -------------------------
-    st.subheader("Demand Forecasts")
-
-    for item_id in item_ids:
-        st.markdown(f"**{item_id}**")
-        forecast_df = results["forecast"][item_id]["daily_forecast"]
-        forecast_df = forecast_df.set_index("date")
-
-        st.line_chart(forecast_df["forecast"])
-
-        st.caption(
-            f"Total forecast: {int(results['forecast'][item_id]['total_units'])} units "
-            f"({results['forecast'][item_id]['avg_daily_units']:.1f} units/day)"
+    with col1:
+        store_id = st.selectbox(
+            "Store",
+            sorted(df_base["store_id"].unique())
         )
 
-    # -------------------------
-    # POLICY TABLE
-    # -------------------------
-    st.subheader("Recommended Inventory Policies")
+    with col2:
+        start_date = st.date_input(
+            "Start Date",
+            value=HOLDOUT_START,
+            min_value=HOLDOUT_START,
+            max_value=HOLDOUT_END
+        )
 
-    policy_df = pd.DataFrame(results["policies"])
-    st.dataframe(
-        policy_df[
-            ["item_id", "s", "Q", "fill_rate", "total_cost"]
-        ],
-        use_container_width=True
+        end_date = st.date_input(
+            "End Date",
+            value=HOLDOUT_END,
+            min_value=HOLDOUT_START,
+            max_value=HOLDOUT_END
+        )
+
+    if start_date > end_date:
+        st.error("Start date must be before end date.")
+        st.stop()
+
+    service_level_target = st.slider(
+        "Service Level (%)",
+        90, 99, 95
+    ) / 100
+
+    return store_id, start_date, end_date, service_level_target
+
+
+def render_dashboard():
+    store_id, start_date, end_date, service_level_target = get_common_inputs()
+
+    with st.form("single_sku_form"):
+
+        item_id = st.selectbox(
+            "Product (Trained SKUs Only)",
+            trained_skus
+        )
+
+        run_clicked = st.form_submit_button("Run Optimization")
+
+    preview_clicked = st.button(
+        "Preview Monte Carlo Simulation",
+        key=f"preview_{item_id}"
     )
 
-    # -------------------------
-    # COST BREAKDOWN
-    # -------------------------
-    st.subheader("Cost Breakdown")
+    if preview_clicked:
+        baseline_context = st.session_state.get("baseline_context")
+        policy = None
+        assumptions = None
+        if baseline_context and baseline_context.get("inputs", {}).get("item_id") == item_id:
+            policies = baseline_context.get("policies", [])
+            if policies:
+                policy = policies[0]
+            assumptions = baseline_context.get("assumptions")
 
-    st.dataframe(
-        policy_df[
-            ["item_id", "holding_cost", "ordering_cost", "stockout_cost"]
-        ],
-        use_container_width=True
-    )
+        with st.spinner("Running Monte Carlo preview..."):
+            preview = run_simulation_preview(
+                store_id,
+                item_id,
+                start_date,
+                end_date,
+                df_base,
+                forecast_agent,
+                policy=policy,
+                assumptions=assumptions
+            )
+        context["monte_carlo_preview"] = preview
+
+    if context.get("monte_carlo_preview"):
+        preview = context["monte_carlo_preview"]
+
+        st.subheader("Monte Carlo Preview (Stochastic Sampling)")
+        st.caption(
+            "We simulated 500 possible demand scenarios to test this policy."
+        )
+
+        academic_tab, business_tab = st.tabs(["Academic View", "Business View"])
+
+        with academic_tab:
+            st.markdown("This view shows the raw Monte Carlo simulation outputs across runs.")
+            col_a, col_b = st.columns(2)
+
+            with col_a:
+                fig_total = px.histogram(
+                    preview["total_demand"],
+                    nbins=30,
+                    title="Total Demand Distribution"
+                )
+                st.plotly_chart(fig_total, use_container_width=True)
+
+            with col_b:
+                fig_fill = px.histogram(
+                    [v * 100 for v in preview["fill_rate"]],
+                    nbins=30,
+                    title="Fill Rate Distribution (%)"
+                )
+                st.plotly_chart(fig_fill, use_container_width=True)
+
+            sample_path = preview.get("sample_path", {})
+            inventory_path = sample_path.get("inventory_path", [])
+            stockout_flags = sample_path.get("stockout_days", [])
+            reorder_days = sample_path.get("reorder_days", [])
+
+            if inventory_path:
+                fig_path = go.Figure()
+                days = list(range(len(inventory_path)))
+
+                fig_path.add_trace(go.Scatter(
+                    x=days,
+                    y=inventory_path,
+                    mode="lines",
+                    name="Inventory Level",
+                    line=dict(width=3)
+                ))
+
+                stockout_x = [days[i] for i, flag in enumerate(stockout_flags) if flag]
+                stockout_y = [inventory_path[i] for i, flag in enumerate(stockout_flags) if flag]
+                if stockout_x:
+                    fig_path.add_trace(go.Scatter(
+                        x=stockout_x,
+                        y=stockout_y,
+                        mode="markers",
+                        name="Stockout Day",
+                        marker=dict(color="red", size=8)
+                    ))
+
+                reorder_x = [days[i] for i in reorder_days if i < len(days)]
+                reorder_y = [inventory_path[i] for i in reorder_days if i < len(inventory_path)]
+                if reorder_x:
+                    fig_path.add_trace(go.Scatter(
+                        x=reorder_x,
+                        y=reorder_y,
+                        mode="markers",
+                        name="Reorder Placed",
+                        marker=dict(color="orange", size=8, symbol="triangle-up")
+                    ))
+
+                fig_path.update_layout(
+                    template="plotly_dark",
+                    height=400,
+                    xaxis_title="Day",
+                    yaxis_title="Inventory Level",
+                    title="Inventory Timeline (Single Simulation Run)"
+                )
+                st.plotly_chart(fig_path, use_container_width=True)
+
+        with business_tab:
+            mean_fill_rate = preview.get("mean_fill_rate", 0.0)
+            stockout_prob = preview.get("stockout_probability", 0.0)
+            worst_lost_units = preview.get("worst_case_lost_units", 0.0)
+
+            metric_cols = st.columns(3)
+            metric_cols[0].metric("Average Service Level", f"{mean_fill_rate:.2%}")
+            metric_cols[1].metric("Probability of Stockout", f"{stockout_prob:.2%}")
+            metric_cols[2].metric("Worst Case Lost Units", f"{worst_lost_units:.2f}")
+
+            st.markdown(
+                f"This policy meets demand about {mean_fill_rate * 100:.1f}% of the time "
+                f"with a {stockout_prob * 100:.1f}% chance of stockout."
+            )
+
+    if run_clicked:
+
+        with st.spinner("Running optimization..."):
+
+            results = run_single_sku_dashboard(
+                store_id,
+                item_id,
+                start_date,
+                end_date,
+                service_level_target,
+                "auto",
+                None,
+                None,
+                df_base,
+                forecast_agent,
+                llm_client
+            )
+
+            context["single_sku_results"] = results
+            st.session_state["baseline_context"] = results
 
     # -------------------------
-    # MANAGERIAL SUMMARIES
+    # Render Results (Only if Flag True)
     # -------------------------
-    st.subheader("Managerial Recommendations")
 
-    for item_id, summary in results["llm_summaries"].items():
-        with st.expander(f"{item_id} – Recommendation"):
-            st.write(summary)
+    if context.get("single_sku_results"):
+        results = context["single_sku_results"]
+
+        # Use containers to prevent full redraw flicker
+        forecast_container = st.container()
+        storyboard_container = st.container()
+        policy_container = st.container()
+        scenario_container = st.container()
+        optimal_container = st.container()
+
+        with forecast_container:
+            render_forecast(results)
+
+        with storyboard_container:
+            render_simulation_storyboard(results)
+
+        with policy_container:
+            render_policy_tables(results)
+
+        with scenario_container:
+            render_scenarios(results)
+
+        with optimal_container:
+            render_optimal_scenarios(results)
+
+render_dashboard()
