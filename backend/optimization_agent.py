@@ -70,8 +70,14 @@ class OptimizationAgent:
         s_candidates,
         Q_candidates
     ):
+        """
+        Search over (s, Q) and return the lowest-cost policy that satisfies
+        the target service level. If none satisfy the target, return the
+        best available policy by fill rate (then cost).
+        """
         horizon_days = len(forecast_df)
-        best = None
+        best_feasible = None
+        best_infeasible = None
         all_results = []
 
         for s in s_candidates:
@@ -88,11 +94,6 @@ class OptimizationAgent:
 
                 fill_rate = sim_result["results"]["expected_fill_rate"]
 
-                # enforce service constraint (allow slight buffer below target)
-                min_fill_rate = max(0.0, self.target_fill_rate - 0.02)
-                if fill_rate < min_fill_rate:
-                    continue
-
                 cost = self._compute_cost(
                     sim_result=sim_result,
                     avg_price=avg_price,
@@ -107,10 +108,26 @@ class OptimizationAgent:
                     "fill_rate": fill_rate,
                     **cost
                 }
-                all_results.append(record)
+                # Feasible policy: meets service level target
+                if fill_rate >= self.target_fill_rate:
+                    all_results.append(record)
+                    if best_feasible is None or cost["total_cost"] < best_feasible["total_cost"]:
+                        best_feasible = record
+                else:
+                    # Fallback: track best available if none meet target
+                    if (
+                        best_infeasible is None
+                        or fill_rate > best_infeasible["fill_rate"]
+                        or (
+                            np.isclose(fill_rate, best_infeasible["fill_rate"])
+                            and cost["total_cost"] < best_infeasible["total_cost"]
+                        )
+                    ):
+                        best_infeasible = record
 
-                if best is None or cost["total_cost"] < best["total_cost"]:
-                    best = record
+        best = best_feasible if best_feasible is not None else best_infeasible
+        if best is not None:
+            best["service_level_met"] = best["fill_rate"] >= self.target_fill_rate
 
         return {
             "best_policy": best,

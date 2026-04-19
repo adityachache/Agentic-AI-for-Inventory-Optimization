@@ -32,6 +32,7 @@ build/
 # Models / data (optional: remove if you want to track small artifacts)
 models/
 data/
+proposals/
 # *.csv
 # *.parquet
 
