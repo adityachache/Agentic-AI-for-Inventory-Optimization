@@ -13,6 +13,13 @@ def generate_portfolio_candidates(
     sim_agent,
     opt_agent
 ):
+    """
+    Build the candidate policy set for each SKU in the portfolio.
+
+    Policies that are close enough to the requested service level are kept.
+    If a SKU has no policy meeting that screen, retain the best available
+    fallback policy so the portfolio model can still be solved.
+    """
     s_candidates = range(5, 101, 10)
     Q_candidates = range(10, 81, 10)
 
@@ -37,6 +44,7 @@ def generate_portfolio_candidates(
         )
 
         policies = []
+        fallback_policy = None
         pid = 0
 
         for s in s_candidates:
@@ -55,9 +63,6 @@ def generate_portfolio_candidates(
                 fill_rate = sim_eval["results"]["expected_fill_rate"]
 
                 min_fill_rate = max(0.0, service_level_target - 0.02)
-                if fill_rate < min_fill_rate:
-                    continue
-
                 cost = opt_agent._compute_cost(
                     sim_result=sim_eval,
                     avg_price=avg_price,
@@ -72,7 +77,7 @@ def generate_portfolio_candidates(
                     sim_eval["results"]["avg_orders"] * Q * avg_price
                 )
 
-                policies.append({
+                policy_record = {
                     "policy_id": pid,
                     "s": s,
                     "Q": Q,
@@ -80,9 +85,28 @@ def generate_portfolio_candidates(
                     "investment": investment,
                     "procurement_spend": procurement_spend,
                     "fill_rate": fill_rate
-                })
+                }
+
+                if (
+                    fallback_policy is None
+                    or fill_rate > fallback_policy["fill_rate"]
+                    or (
+                        fill_rate == fallback_policy["fill_rate"]
+                        and cost["total_cost"] < fallback_policy["cost"]
+                    )
+                ):
+                    fallback_policy = policy_record
+
+                if fill_rate < min_fill_rate:
+                    pid += 1
+                    continue
+
+                policies.append(policy_record)
 
                 pid += 1
+
+        if not policies and fallback_policy is not None:
+            policies = [fallback_policy]
 
         candidate_data[sku] = policies
 

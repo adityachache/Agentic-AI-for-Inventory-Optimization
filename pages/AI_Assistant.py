@@ -3,7 +3,7 @@ import streamlit as st
 import anthropic
 import pandas as pd
 
-from backend.mcp_tools import event_window_shock_tool
+from backend.mcp_tools import event_window_shock_tool, portfolio_event_window_shock_tool
 from backend.build_base_df import build_df_base
 from backend.forecast_agent import ForecastAgent
 from backend.optimization_agent import OptimizationAgent
@@ -190,35 +190,62 @@ def build_structured_context(baseline_context, portfolio_context, shock_analysis
     if shock_analysis:
         baseline = shock_analysis.get("baseline_policy", {}) or {}
         shock = shock_analysis.get("shock_optimal_policy", {}) or {}
-
+        shock_percentage = float(shock_analysis.get("shock_percentage", st.session_state.get("last_shock_percentage", 0)) or 0)
         baseline_cost = float(baseline.get("total_cost", 0) or 0)
         shock_cost = float(shock.get("total_cost", 0) or 0)
         baseline_fill = float(baseline.get("fill_rate", 0) or 0)
         shock_fill = float(shock.get("fill_rate", 0) or 0)
-        shock_percentage = float(st.session_state.get("last_shock_percentage", 0) or 0)
-
         cost_change = ((shock_cost - baseline_cost) / baseline_cost * 100) if baseline_cost else 0
         fill_change = ((shock_fill - baseline_fill) / baseline_fill * 100) if baseline_fill else 0
 
-        sections.append(
-            "\n".join(
-                [
-                    "Shock Analysis:",
-                    f"Demand shock increase (%): {shock_percentage*100:.2f}",
-                    f"Baseline s: {float(baseline.get('s', 0) or 0):.0f}",
-                    f"Baseline Q: {float(baseline.get('Q', 0) or 0):.0f}",
-                    f"Baseline fill rate: {baseline_fill:.4f}",
-                    f"Baseline total cost: {baseline_cost:.2f}",
-                    f"Shock s: {float(shock.get('s', 0) or 0):.0f}",
-                    f"Shock Q: {float(shock.get('Q', 0) or 0):.0f}",
-                    f"Shock fill rate: {shock_fill:.4f}",
-                    f"Shock total cost: {shock_cost:.2f}",
-                    f"Cost change vs baseline (%): {cost_change:.2f}",
-                    f"Fill rate change vs baseline (%): {fill_change:.2f}",
-                    f"Risk level: {shock.get('risk_level', 'Unknown')}",
-                ]
+        if shock_analysis.get("analysis_type") == "portfolio" or baseline.get("scope") == "portfolio":
+            shocked = shock_analysis.get("shocked_policy", {}) or {}
+            sections.append(
+                "\n".join(
+                    [
+                        "Shock Analysis:",
+                        "Scope: Portfolio",
+                        f"Demand shock increase (%): {shock_percentage*100:.2f}",
+                        f"Baseline combined s: {baseline.get('s', '0')}",
+                        f"Baseline combined Q: {baseline.get('Q', '0')}",
+                        f"Baseline portfolio fill rate: {baseline_fill:.4f}",
+                        f"Baseline portfolio total cost: {baseline_cost:.2f}",
+                        f"Baseline working capital: {float(baseline.get('working_capital', 0) or 0):.2f}",
+                        f"Shocked combined s: {shocked.get('s', baseline.get('s', '0'))}",
+                        f"Shocked combined Q: {shocked.get('Q', baseline.get('Q', '0'))}",
+                        f"Shocked portfolio fill rate: {float(shocked.get('fill_rate', 0) or 0):.4f}",
+                        f"Shocked portfolio total cost: {float(shocked.get('total_cost', 0) or 0):.2f}",
+                        f"Re-optimized combined s: {shock.get('s', '0')}",
+                        f"Re-optimized combined Q: {shock.get('Q', '0')}",
+                        f"Re-optimized portfolio fill rate: {shock_fill:.4f}",
+                        f"Re-optimized portfolio total cost: {shock_cost:.2f}",
+                        f"Cost change vs baseline (%): {cost_change:.2f}",
+                        f"Fill rate change vs baseline (%): {fill_change:.2f}",
+                        f"Risk level: {shock.get('risk_level', 'Unknown')}",
+                    ]
+                )
             )
-        )
+        else:
+            sections.append(
+                "\n".join(
+                    [
+                        "Shock Analysis:",
+                        "Scope: Single SKU",
+                        f"Demand shock increase (%): {shock_percentage*100:.2f}",
+                        f"Baseline s: {float(baseline.get('s', 0) or 0):.0f}",
+                        f"Baseline Q: {float(baseline.get('Q', 0) or 0):.0f}",
+                        f"Baseline fill rate: {baseline_fill:.4f}",
+                        f"Baseline total cost: {baseline_cost:.2f}",
+                        f"Shock s: {float(shock.get('s', 0) or 0):.0f}",
+                        f"Shock Q: {float(shock.get('Q', 0) or 0):.0f}",
+                        f"Shock fill rate: {shock_fill:.4f}",
+                        f"Shock total cost: {shock_cost:.2f}",
+                        f"Cost change vs baseline (%): {cost_change:.2f}",
+                        f"Fill rate change vs baseline (%): {fill_change:.2f}",
+                        f"Risk level: {shock.get('risk_level', 'Unknown')}",
+                    ]
+                )
+            )
 
     if not sections:
         return "No optimization results available yet."
@@ -230,35 +257,72 @@ def render_shock_table(shock_result):
     baseline = shock_result["baseline_policy"]
     shocked = shock_result.get("shocked_policy", {})
     shock = shock_result["shock_optimal_policy"]
+    is_portfolio = shock_result.get("analysis_type") == "portfolio" or baseline.get("scope") == "portfolio"
 
-    comparison_df = pd.DataFrame(
-        [
-            {
-                "Policy": "Baseline",
-                "s": baseline["s"],
-                "Q": baseline["Q"],
-                "Fill Rate": baseline["fill_rate"],
-                "Total Cost": baseline["total_cost"],
-                "Risk Level": baseline.get("risk_level", "")
-            },
-            {
-                "Policy": "Shocked",
-                "s": shocked.get("s", baseline["s"]),
-                "Q": shocked.get("Q", baseline["Q"]),
-                "Fill Rate": shocked.get("fill_rate", 0),
-                "Total Cost": shocked.get("total_cost", 0),
-                "Risk Level": shocked.get("risk_level", "")
-            },
-            {
-                "Policy": "Shock-Optimized",
-                "s": shock["s"],
-                "Q": shock["Q"],
-                "Fill Rate": shock["fill_rate"],
-                "Total Cost": shock["total_cost"],
-                "Risk Level": shock.get("risk_level", "")
-            }
-        ]
-    )
+    if is_portfolio:
+        comparison_df = pd.DataFrame(
+            [
+                {
+                    "Policy": "Baseline",
+                    "s": baseline.get("s", "0"),
+                    "Q": baseline.get("Q", "0"),
+                    "SKUs": baseline.get("sku_count", 0),
+                    "Working Capital": baseline.get("working_capital", 0),
+                    "Fill Rate": baseline.get("fill_rate", 0),
+                    "Total Cost": baseline.get("total_cost", 0),
+                    "Risk Level": baseline.get("risk_level", "")
+                },
+                {
+                    "Policy": "Shocked",
+                    "s": shocked.get("s", baseline.get("s", "0")),
+                    "Q": shocked.get("Q", baseline.get("Q", "0")),
+                    "SKUs": shocked.get("sku_count", baseline.get("sku_count", 0)),
+                    "Working Capital": shocked.get("working_capital", 0),
+                    "Fill Rate": shocked.get("fill_rate", 0),
+                    "Total Cost": shocked.get("total_cost", 0),
+                    "Risk Level": shocked.get("risk_level", "")
+                },
+                {
+                    "Policy": "Shock-Optimized",
+                    "s": shock.get("s", "0"),
+                    "Q": shock.get("Q", "0"),
+                    "SKUs": shock.get("sku_count", 0),
+                    "Working Capital": shock.get("working_capital", 0),
+                    "Fill Rate": shock.get("fill_rate", 0),
+                    "Total Cost": shock.get("total_cost", 0),
+                    "Risk Level": shock.get("risk_level", "")
+                }
+            ]
+        )
+    else:
+        comparison_df = pd.DataFrame(
+            [
+                {
+                    "Policy": "Baseline",
+                    "s": baseline["s"],
+                    "Q": baseline["Q"],
+                    "Fill Rate": baseline["fill_rate"],
+                    "Total Cost": baseline["total_cost"],
+                    "Risk Level": baseline.get("risk_level", "")
+                },
+                {
+                    "Policy": "Shocked",
+                    "s": shocked.get("s", baseline["s"]),
+                    "Q": shocked.get("Q", baseline["Q"]),
+                    "Fill Rate": shocked.get("fill_rate", 0),
+                    "Total Cost": shocked.get("total_cost", 0),
+                    "Risk Level": shocked.get("risk_level", "")
+                },
+                {
+                    "Policy": "Shock-Optimized",
+                    "s": shock["s"],
+                    "Q": shock["Q"],
+                    "Fill Rate": shock["fill_rate"],
+                    "Total Cost": shock["total_cost"],
+                    "Risk Level": shock.get("risk_level", "")
+                }
+            ]
+        )
 
     def style_risk_level(value):
         color_map = {
@@ -271,18 +335,34 @@ def render_shock_table(shock_result):
     def style_change(row):
         if row["Policy"] == "Baseline":
             return [""] * len(row)
+
+        if row["Policy"] == "Shocked":
+            reference_row = comparison_df.loc[comparison_df["Policy"] == "Baseline"].iloc[0]
+        else:
+            shocked_rows = comparison_df.loc[comparison_df["Policy"] == "Shocked"]
+            if not shocked_rows.empty:
+                reference_row = shocked_rows.iloc[0]
+            else:
+                reference_row = comparison_df.loc[comparison_df["Policy"] == "Baseline"].iloc[0]
+
         styles = []
         for col in row.index:
             if col == "Fill Rate":
                 styles.append(
                     "color: #36d060; font-weight: 600;"
-                    if row[col] > comparison_df.loc[0, col]
+                    if row[col] >= reference_row[col]
                     else "color: #ff6b6b; font-weight: 600;"
                 )
             elif col == "Total Cost":
                 styles.append(
                     "color: #36d060; font-weight: 600;"
-                    if row[col] < comparison_df.loc[0, col]
+                    if row[col] <= reference_row[col]
+                    else "color: #ff6b6b; font-weight: 600;"
+                )
+            elif col == "Working Capital":
+                styles.append(
+                    "color: #36d060; font-weight: 600;"
+                    if row[col] <= reference_row[col]
                     else "color: #ff6b6b; font-weight: 600;"
                 )
             else:
@@ -291,7 +371,11 @@ def render_shock_table(shock_result):
 
     styled = (
         comparison_df.style
-        .format({"Fill Rate": "{:.2%}", "Total Cost": "${:,.2f}"})
+        .format({
+            "Fill Rate": "{:.2%}",
+            "Total Cost": "${:,.2f}",
+            "Working Capital": "${:,.2f}"
+        })
         .applymap(style_risk_level, subset=["Risk Level"])
         .apply(style_change, axis=1)
     )
@@ -299,6 +383,8 @@ def render_shock_table(shock_result):
     st.caption(
         "Comparison of baseline policy performance under normal demand, shocked demand, and after policy re-optimization."
     )
+    if is_portfolio:
+        st.caption("For portfolio shocks, `s` and `Q` show a combined policy summary as average values with the min-max range across SKUs when policies differ.")
     st.dataframe(styled, use_container_width=True)
 
 
@@ -319,15 +405,38 @@ def render_risk_badge(label: str):
 def render_shock_metrics_row(shock_result):
     baseline = shock_result.get("baseline_policy", {}) or {}
     shock = shock_result.get("shock_optimal_policy", {}) or {}
+    is_portfolio = shock_result.get("analysis_type") == "portfolio" or baseline.get("scope") == "portfolio"
 
     cols = st.columns(5)
     cols[0].metric("Baseline Fill Rate", f"{float(baseline.get('fill_rate', 0) or 0):.2%}")
     cols[1].metric("Shock Fill Rate", f"{float(shock.get('fill_rate', 0) or 0):.2%}")
     cols[2].metric("Baseline Cost", f"${float(baseline.get('total_cost', 0) or 0):,.2f}")
-    cols[3].metric("Shock Cost", f"${float(shock.get('total_cost', 0) or 0):,.2f}")
+    metric_label = "Shock Cost" if not is_portfolio else "Re-Optimized Cost"
+    cols[3].metric(metric_label, f"${float(shock.get('total_cost', 0) or 0):,.2f}")
     with cols[4]:
-        st.caption("Risk Level")
+        caption = "Risk Level" if not is_portfolio else "Portfolio Risk"
+        st.caption(caption)
         render_risk_badge(shock.get("risk_level", "Unknown"))
+
+
+def use_portfolio_shock_mode(user_prompt, baseline_context, portfolio_context):
+    """
+    Decide whether a shock request should run against the portfolio context.
+    """
+    lowered = user_prompt.lower()
+    portfolio_keywords = (
+        "portfolio",
+        "multi sku",
+        "multiple sku",
+        "all sku",
+        "all skus",
+        "budget",
+    )
+    if portfolio_context and baseline_context is None:
+        return True
+    if portfolio_context and any(keyword in lowered for keyword in portfolio_keywords):
+        return True
+    return False
 
 
 def render_shock_recommendations():
@@ -358,6 +467,7 @@ if "shock_history" not in st.session_state:
 
 baseline_context = st.session_state.get("baseline_context") or context.get("single_sku_results")
 portfolio_context = st.session_state.get("portfolio_context") or context.get("portfolio_results")
+portfolio_meta = context.get("portfolio_meta", {}) or {}
 
 # Render chat history
 for message in st.session_state.chat_history:
@@ -417,10 +527,16 @@ if user_prompt:
             )
             response_text = response.content[0].text
     elif shock_intent and shock_percentage is not None:
-        if baseline_context is None:
+        use_portfolio_mode = use_portfolio_shock_mode(
+            user_prompt,
+            baseline_context,
+            portfolio_context
+        )
+
+        if baseline_context is None and portfolio_context is None:
             response_text = (
-                "I can run a shock analysis once a single SKU optimization is available. "
-                "Run a single SKU optimization first, then ask again."
+                "Please run a single SKU or portfolio optimization first so I can analyze "
+                "your inventory strategy."
             )
         else:
             if st.session_state.last_shock_prompt == user_prompt and st.session_state.shock_analysis is not None:
@@ -429,14 +545,25 @@ if user_prompt:
                     "Let me know if you want a different percentage."
                 )
             else:
-                result = event_window_shock_tool(
-                    baseline_context=baseline_context,
-                    sim_agent=sim_agent,
-                    opt_agent=opt_agent,
-                    df_base=df_base,
-                    forecast_agent=forecast_agent,
-                    shock_percentage=shock_percentage
-                )
+                if use_portfolio_mode:
+                    result = portfolio_event_window_shock_tool(
+                        portfolio_context=portfolio_context,
+                        portfolio_meta=portfolio_meta,
+                        sim_agent=sim_agent,
+                        opt_agent=opt_agent,
+                        df_base=df_base,
+                        forecast_agent=forecast_agent,
+                        shock_percentage=shock_percentage
+                    )
+                else:
+                    result = event_window_shock_tool(
+                        baseline_context=baseline_context,
+                        sim_agent=sim_agent,
+                        opt_agent=opt_agent,
+                        df_base=df_base,
+                        forecast_agent=forecast_agent,
+                        shock_percentage=shock_percentage
+                    )
 
                 if "error" in result:
                     response_text = result["error"]
@@ -451,11 +578,18 @@ if user_prompt:
                             "result": result
                         }
                     )
-                    response_text = (
-                        f"I ran a {shock_percentage*100:.0f}% demand shock. "
-                        "The policy shifts to buffer higher demand while balancing cost and service. "
-                        "Review the new reorder point and order quantity to ensure the trade-off fits your risk tolerance."
-                    )
+                    if use_portfolio_mode:
+                        response_text = (
+                            f"I ran a {shock_percentage*100:.0f}% demand shock on the portfolio. "
+                            "This shows how the current portfolio performs under higher demand and what a re-optimized "
+                            "portfolio would look like under the same budget."
+                        )
+                    else:
+                        response_text = (
+                            f"I ran a {shock_percentage*100:.0f}% demand shock. "
+                            "The policy shifts to buffer higher demand while balancing cost and service. "
+                            "Review the new reorder point and order quantity to ensure the trade-off fits your risk tolerance."
+                        )
     else:
         if baseline_context is None and portfolio_context is None:
             response_text = (
@@ -503,9 +637,13 @@ if st.session_state.shock_history:
         shock_result = entry.get("result")
         if not shock_result:
             continue
+        is_portfolio = (
+            shock_result.get("analysis_type") == "portfolio"
+            or shock_result.get("baseline_policy", {}).get("scope") == "portfolio"
+        )
         st.markdown("---")
         st.markdown(
-            f"### ⚡ Shock Analysis: {shock_pct*100:.0f}% Demand Increase"
+            f"### ⚡ {'Portfolio ' if is_portfolio else ''}Shock Analysis: {shock_pct*100:.0f}% Demand Increase"
         )
         st.markdown("#### 📊 Metrics")
         render_shock_metrics_row(shock_result)

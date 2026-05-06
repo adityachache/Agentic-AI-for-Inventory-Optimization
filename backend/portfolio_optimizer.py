@@ -2,6 +2,21 @@ import pyomo.environ as pyo
 
 
 def solve_portfolio(candidate_data, budget):
+    """
+    Solve the budget-constrained portfolio selection problem.
+
+    Returns a user-facing error payload if any SKU has no candidate policies
+    instead of allowing Pyomo to fail during model construction.
+    """
+    empty_skus = [sku for sku, policies in candidate_data.items() if not policies]
+    if empty_skus:
+        return {
+            "error": (
+                "No candidate inventory policies were available for: "
+                + ", ".join(empty_skus)
+                + ". Try a lower service level target or a different SKU selection."
+            )
+        }
 
     model = pyo.ConcreteModel()
 
@@ -12,6 +27,9 @@ def solve_portfolio(candidate_data, budget):
     for sku in skus:
         for policy in candidate_data[sku]:
             index_set.append((sku, policy["policy_id"]))
+
+    if not index_set:
+        return {"error": "No candidate portfolio policies were generated."}
 
     model.x = pyo.Var(index_set, domain=pyo.Binary)
 

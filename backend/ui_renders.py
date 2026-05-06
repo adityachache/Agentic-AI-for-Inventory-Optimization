@@ -241,6 +241,7 @@ def render_policy_tables(results):
         use_container_width=True
     )
 
+    st.markdown("**Total cost = ordering cost + holding cost + stockout cost.**")
     st.subheader("Cost Breakdown")
 
     st.dataframe(
